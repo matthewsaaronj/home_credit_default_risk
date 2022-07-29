@@ -1,0 +1,261 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(gridExtra)
+library(fabletools)
+library(pins)
+library(RODBC)
+
+options(scipen = 999)
+theme_set(theme_minimal())
+
+'%notin%' <- Negate(`%in%`)
+
+board <- board_folder(getwd())
+train <- board %>% pin_read('hc_train')
+
+db <- odbcDriverConnect('DRIVER={SQL SERVER};SERVER=LAPTOP-LT2BSKO0\\SQLEXPRESS;DATABASE=HOME_CREDIT')
+```
+
+
+
+
+
+
+
+
+# Missing values
+```{r}
+colSums(is.na(train))[colSums(is.na(train)) > 0]
+```
+
+```{r}
+train %>% select_if(negate(is.numeric)) %>% str()
+```
+
+# Automated EDA Function for simple exploration
+```{r}
+auto_eda <-
+  tryCatch(
+      function(df, vars, target, base_default_rate){
+    
+    df <-
+      df %>% 
+      mutate_at(c(target), as.character) %>% 
+      mutate_at(c(target), as.numeric)
+    
+    
+    for(x in vars){
+     if (nrow(data.frame(unique(df[, x]))) >= 20 & is.numeric(df[, x])){
+       
+       minval <- min(df[, x]) - 1
+       maxval <- max(df[, x]) + 1
+       quantiles <- unique(c(minval, quantile(df[, x], seq(0, 1, .1), na.rm = TRUE), maxval))
+       
+       tstep <-
+         df %>% 
+         mutate({{x}} := fct_explicit_na(cut(!!as.symbol(x), breaks = quantiles))) %>% 
+         group_by(.dots = x) %>% 
+         summarize(default_rate = mean(!!as.symbol(target)),
+                   cnt = n())
+         
+     } else{
+       
+       tstep <-
+         df %>% 
+         group_by(.dots = x) %>% 
+         summarize(default_rate = mean(target),
+                   cnt = n())
+     }
+      
+       p1 <-
+         tstep %>% 
+         ggplot(aes(x = fct_rev(factor(!!as.symbol(x))), y = cnt)) +
+         geom_bar(stat = 'identity', width = .6, fill = '#53868b') +
+         labs(title = x, x = NULL, y = 'Count') +
+         coord_flip() +
+         theme_light() 
+       
+       
+       p2 <-
+         tstep %>% 
+         ggplot(aes(x = fct_rev(factor(!!as.symbol(x))), y = default_rate)) +
+         geom_bar(stat = 'identity', width = .5, fill = '#53868b') +
+         labs(title = x, x = NULL, y = 'Default Rate') +
+         coord_flip() +
+         theme_light() +
+         geom_hline(yintercept = base_default_rate, color = 'indianred', linetype = 'dashed')
+       
+       plot <- grid.arrange(p1, p2, nrow = 2)
+       plot
+      
+    }
+  },
+  error = function(e){
+    print(x)
+  }
+    
+  )
+
+```
+
+
+# Application Data
+
+Start off analyzing data where very little is missing. 
+```{r, warning=FALSE, message=FALSE, fig.height=7, fig.width=7}
+
+base_df_rate = mean(as.numeric(as.character(train$target)))
+train_vars <- names(colSums(is.na(train))[colSums(is.na(train)) < 1000])
+
+train %>% 
+  auto_eda(vars =  train_vars,
+           target =  'target', 
+           base_default_rate = base_df_rate)
+```
+
+# Bureau Data
+```{r}
+bb <-
+  sqlQuery(
+    db,
+    "
+        SELECT
+        B.*
+
+        FROM dbo.APPLICATION_DATA A
+        	LEFT JOIN dbo.HC_BUREAU B
+        		on A.SK_ID_CURR = B.SK_ID_CURR
+        WHERE DATA_SPLIT = 'TRAIN'
+           "
+  ) %>%
+  clean_names()
+
+bb <-
+  train %>% 
+    select(sk_id_curr, target) %>% 
+    inner_join(bb, by = 'sk_id_curr')
+```
+
+```{r}
+bb_vars <-
+  bb %>% 
+  select(-sk_id_curr, -sk_id_bureau) %>% 
+  names()
+
+bb %>% 
+  auto_eda(vars = bb_vars, base_default_rate = base_df_rate, target = 'target')
+```
+
+
+days_credit: the longer the credit has been open, the less likely the account is to default. 
+credit_day_overdue: if the account has overdue days, it's more likely to default.
+days_credit_enddate: what does this mean? Higher values more likely to default
+days_enddate_fact: related to closed accounts (most likely number of days since close?). If an account closed recently, more likely to default.
+amt_credit_max_overdue: higher values more likely to default. 
+amt_credit_sum: this
+amt_credit_sum_debt: having debt more likely to default.
+days_credit_update: how many days before application did last credit information come, the higher the value the more likely to default.
+amt_annuity: having annuity values leads to higher default rate.
+
+
+
+ideas:
+* what is the total amount of credit compared to their credit limit?
+* compare credit length to age
+* Look at credit types and the amounts associated with them. You might even be able to create a simple model to gain some understanding of these. 
+
+# Bureau Balance
+Monthly balances of previous credits in Credit Bureau.
+
+```{r}
+bal <-
+  sqlQuery(
+    db,
+    "
+        SELECT
+        B.*
+
+        FROM dbo.APPLICATION_DATA A
+        	LEFT JOIN dbo.HC_BUREAU_BALANCE B
+        		on A.SK_ID_CURR = B.SK_ID_CURR
+        WHERE DATA_SPLIT = 'TRAIN'
+           "
+  ) %>%
+  clean_names()
+
+bal <-
+  train %>% 
+    select(sk_id_curr, target) %>% 
+    inner_join(bal, by = 'sk_id_curr')
+
+head(bal)
+```
+
+
+# Credit Card Balance
+Monthly balance of client's previous credit card loans in Home Credit
+
+```{r}
+cb <-
+  sqlQuery(
+    db,
+    "
+        SELECT
+        B.*
+
+        FROM dbo.APPLICATION_DATA A
+        	LEFT JOIN dbo.HC_CREDIT_CARD_BALANCE B
+        		on A.SK_ID_CURR = B.SK_ID_CURR
+        WHERE DATA_SPLIT = 'TRAIN'
+           "
+  ) %>%
+  clean_names()
+
+cb <-
+  train %>% 
+    select(sk_id_curr, target) %>% 
+    inner_join(cb, by = 'sk_id_curr')
+```
+
+```{r}
+head(cb)
+```
+
+
+### amt_credit_sum
+```{r}
+bb %>% 
+  group_by(sk_id_curr, target) %>% 
+  summarize(amt_credit_sum = sum(amt_credit_sum)) %>% 
+  auto_eda(vars = c('amt_credit_sum'), target = 'target',base_default_rate =  base_df_rate)
+```
+
+
+
+
+
+
+# Analyzing Numerical Variables
+
+# amt_income_total
+```{r}
+train %>% 
+  ggplot(aes(x = amt_income_total)) +
+  geom_density()
+
+fabletools::
+```
+
+
+```{r}
+MASS::boxcox(train$amt_income_total)
+```
+
+
