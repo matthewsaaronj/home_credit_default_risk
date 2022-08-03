@@ -1,0 +1,33 @@
+---
+title: "Home Credit EDA"
+format: html
+editor: visual
+---
+
+## Application Data
+
+```{r}
+
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(gridExtra)
+library(fabletools)
+library(pins)
+library(RODBC)
+
+options(scipen = 999)
+theme_set(theme_minimal())
+
+'%notin%' <- Negate(`%in%`)
+
+board <- board_folder(getwd())
+train <- board %>% pin_read(name = 'hc_train')
+
+db <- odbcDriverConnect('DRIVER={SQL SERVER};SERVER=LAPTOP-LT2BSKO0\\SQLEXPRESS;DATABASE=HOME_CREDIT')
+
+```
+
+## Bureau Data
+
+#### Hypotheses for Exploration
