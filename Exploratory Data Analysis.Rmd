@@ -41,9 +41,15 @@ train %>% select_if(negate(is.numeric)) %>% str()
 
 # Automated EDA Function for simple exploration
 ```{r}
+# - auto eda ---------------------------------------------
 auto_eda <-
   tryCatch(
-      function(df, vars, target, base_default_rate){
+      function(df, vars, target){
+        
+    base_default_rate <- 
+      df %>% 
+      summarize(mean(!!as.symbol(target))) %>% 
+      pull()
     
     df <-
       df %>% 
@@ -103,6 +109,51 @@ auto_eda <-
     
   )
 
+
+# - facet wrap eda ---------------------------------------------
+eda_facet_wrap <-
+  function(df, vars, target, facet_var){
+    # takes a categorical variable (facet_var) with a numerical variable
+    base_default_rate <- 
+      df %>% 
+      summarize(mean(!!as.symbol(target))) %>% 
+      pull()
+    
+    df <-
+      df %>% 
+      mutate_at(c(target), as.character) %>% 
+      mutate_at(c(target), as.numeric)
+    
+    for (x in vars){
+     if (nrow(data.frame(unique(df[, x]))) >= 20 & is.numeric(df[, x])){
+       
+       minval <- min(df[, x]) - 1
+       maxval <- max(df[, x]) + 1
+       quantiles <- unique(c(minval, quantile(df[, x], seq(0, 1, .1), na.rm = TRUE), maxval))
+       
+        tstep <-
+         df %>% 
+         mutate({{x}} := fct_explicit_na(cut(!!as.symbol(x), breaks = quantiles))) %>% 
+         group_by(.dots = x, !!as.symbol(facet_var)) %>% 
+         summarize(default_rate = mean(!!as.symbol(target)),
+                   cnt = n()) 
+     }
+      
+      p <- 
+        tstep %>% 
+        ggplot(aes(x = fct_rev(factor(!!as.symbol(x))), y = default_rate)) +
+        geom_bar(stat = 'identity', width = .5, fill = '#53868b') +
+        geom_hline(yintercept = base_default_rate, color = 'indianred', linetype = 'dashed') +
+        facet_wrap(as.formula(paste("~", facet_var))) +
+        labs(title = x, x = NULL, y = 'Default Rate') +
+        coord_flip() +
+        theme_light()
+    
+      grid.arrange(p)
+    
+    }
+  }
+
 ```
 
 
@@ -150,7 +201,7 @@ bb_vars <-
   names()
 
 bb %>% 
-  auto_eda(vars = bb_vars, base_default_rate = base_df_rate, target = 'target')
+  auto_eda(vars = bb_vars, target = 'target')
 ```
 
 
@@ -163,6 +214,22 @@ amt_credit_sum: this
 amt_credit_sum_debt: having debt more likely to default.
 days_credit_update: how many days before application did last credit information come, the higher the value the more likely to default.
 amt_annuity: having annuity values leads to higher default rate.
+
+
+```{r}
+bb %>% 
+  filter(credit_active != 'Bad debt') %>% 
+  eda_facet_wrap(vars = c('days_credit', 'days_credit_enddate', 'days_enddate_fact', 'amt_credit_max_overdue', 
+                          'amt_credit_sum', 'amt_credit_sum_debt', 'days_credit_update'),
+                target = 'target', facet_var = 'credit_active')
+```
+
+
+
+
+
+
+
 
 
 
@@ -241,21 +308,5 @@ bb %>%
 
 
 
-
-# Analyzing Numerical Variables
-
-# amt_income_total
-```{r}
-train %>% 
-  ggplot(aes(x = amt_income_total)) +
-  geom_density()
-
-fabletools::
-```
-
-
-```{r}
-MASS::boxcox(train$amt_income_total)
-```
 
 
