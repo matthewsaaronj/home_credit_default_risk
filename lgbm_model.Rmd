@@ -1,0 +1,223 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(pins)
+library(bonsai)
+library(lightgbm)
+library(doParallel)
+library(vip)
+
+board <- board_folder(getwd())
+```
+
+```{r}
+train <- 
+  board %>% 
+  pin_read('hc_train') %>% 
+  mutate(target = as.factor(target))
+
+head(train)
+```
+
+```{r}
+set.seed(42)
+folds <- vfold_cv(train, v = 5)
+```
+
+
+# Build Recipie
+```{r}
+
+lgbm_r1 <-
+  recipe(target ~
+           name_contract_type +
+           code_gender + 
+           amt_credit +
+           days_birth +
+           days_employed +
+           ext_source_2 +
+           amt_income_total 
+         , data = train
+           ) %>% 
+  step_mutate(age = days_birth / -365,
+              credit_to_income = amt_income_total / amt_credit) %>% 
+  step_rm(days_birth) 
+
+
+juice(prep(lgbm_r1)) %>% select(-target)
+
+```
+```{r}
+get_cv_lgbm <-
+  function(recipe){
+    
+    set.seed(42)
+    
+    model <-
+      boost_tree(
+        trees = 500,
+        mtry = tune(),
+        min_n = tune(),
+        tree_depth = tune(),
+        learn_rate = tune(),
+        loss_reduction = tune()
+      ) %>% 
+      set_engine('lightgbm') %>% 
+      set_mode('classification')
+    
+    wf <-
+      workflow() %>% 
+      add_model(model) %>% 
+      add_recipe(recipe)
+    
+    params <-
+      wf %>% 
+      parameters() %>% 
+      finalize(juice(prep(recipe)) %>% select(-target))
+    
+    cl <- makePSOCKcluster(detectCores() - 1)
+    registerDoParallel(cl)
+    
+    search <-
+      wf %>% 
+      tune_bayes(
+        resamples = folds,
+        param_info = params,
+        iter = 30,
+        control = control_bayes(save_pred = TRUE, save_workflow = TRUE, verbose = TRUE, no_improve = 10),
+        metrics = metric_set(roc_auc)
+      )
+    
+    stopCluster(cl)
+    
+    # save predictions to be used for future access
+    preds <-
+      search %>% 
+      collect_predictions() %>% 
+      filter(
+        .config == search %>% select_best('roc_auc') %>% select(.config) %>% pull()
+      )
+    
+    # create a dataframe that can be used for generating model performance metrics
+    perf_df <-
+      preds %>% 
+      rename(pred = .pred_1, truth = target) %>% 
+      mutate(pred_class = as.factor(ifelse(pred >= mean(as.numeric(as.character(train$target))), 1, 0))) %>% 
+      select(pred, pred_class, truth)
+    
+    return(list(workflow = wf, search = search, predictions = preds, performance_df = perf_df))
+      
+    
+    
+  }
+```
+
+```{r}
+perf_r1 <- get_cv_lgbm(recipe = lgbm_r1)
+```
+# ROC
+```{r}
+perf_r1$search %>% show_best()
+```
+# Recall
+```{r}
+yardstick::recall(perf_r1$performance_df, truth = truth, estimate = pred_class, event_level = 'second')
+```
+
+
+# Precision
+```{r}
+yardstick::precision(perf_r1$performance_df, truth = truth, estimate = pred_class, event_level = 'second')
+```
+
+
+# Confusion Matrix
+```{r}
+get_conf_matrix <-
+  function(perf_object){
+    conf_matrix <-
+      perf_object %>% 
+      conf_mat(truth = truth, estimate = pred_class)
+    
+    conf_matrix %>% 
+      tidy() %>% 
+      inner_join(
+        data.frame(join = 'join', cell_1_1 = 'TN', cell_2_1 = 'FP', cell_1_2 = 'FN', cell_2_2 = 'TP') %>% 
+          pivot_longer(-join, values_to = 'label') %>% 
+          select(name, label)) %>% 
+      mutate(perc = value / nrow(train))
+  }
+```
+
+```{r}
+get_conf_matrix(perf_r1$performance_df)
+```
+
+# ROC Curve
+```{r}
+get_auc_roc <-
+  function(predictions, type = 'auc'){
+    cv_preds <-
+      predictions %>% 
+      arrange(.row) %>% 
+      select(.pred_1, .row, target) %>% 
+      rename(prob = .pred_1)
+    
+    if(type == 'auc'){
+      return(roc_auc(cv_preds, truth = target, prob, event_level = 'second') %>% select(.estimate) %>% pull())
+    }
+    else if(type == 'roc'){
+      return(roc_curve(cv_preds, truth = target, prob, event_level = 'second'))
+      }
+    }
+  
+```
+
+```{r}
+auc_r1 <- get_auc_roc(perf_r1$predictions, 'auc')
+roc_r1 <- get_auc_roc(perf_r1$predictions, 'roc')
+
+
+ggplot() +
+  geom_line(data = roc_r1, aes(x = 1 - specificity, y = sensitivity, color = paste('R1', formattable::percent(auc_r1)))) +
+  labs(color = NULL)
+
+```
+
+# Finalize workflow
+```{r}
+
+finalized_r1 <-
+  perf_r1$workflow %>% 
+  finalize_workflow(perf_r1$search %>% select_best('roc_auc')) %>% 
+  fit(train)
+```
+
+```{r}
+predict_function_gbm <-  function(model, newdata) {
+    predict(model, newdata) %>% pluck(.,1)
+}
+```
+
+
+```{r}
+fastshap::explain(
+  finalized_r1,
+  X = as.data.frame(juice(prep(lgbm_r1)) %>% select(-target)),
+  pred_wrapper = predict_function_gbm,
+  nsim = 10
+)
+```
+
+
+```{r}
+finalized_r1 %>% 
+  pull_workflow_fit() %>% 
+  vip(geom = 'point')
+```
+
