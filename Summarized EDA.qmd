@@ -4,9 +4,10 @@ format: html
 editor: visual
 ---
 
-## Application Data
-
 ```{r}
+#| message: false
+#| warning: false
+#| echo: false
 
 library(tidyverse)
 library(tidymodels)
@@ -28,6 +29,72 @@ db <- odbcDriverConnect('DRIVER={SQL SERVER};SERVER=LAPTOP-LT2BSKO0\\SQLEXPRESS;
 
 ```
 
+## Application Data
+
 ## Bureau Data
+
+```{r}
+bb <-
+  sqlQuery(
+    db,
+    "
+        SELECT
+        B.*
+
+        FROM dbo.APPLICATION_DATA A
+        	LEFT JOIN dbo.HC_BUREAU B
+        		on A.SK_ID_CURR = B.SK_ID_CURR
+        WHERE DATA_SPLIT = 'TRAIN'
+           "
+  ) %>%
+  clean_names()
+
+bb <-
+  train %>% 
+    select(sk_id_curr, target) %>% 
+    inner_join(bb, by = 'sk_id_curr')
+
+bureau <-
+  board %>% 
+  pin_write(bb, name = 'bureau', type = 'csv')
+
+```
+
+```{r}
+bb
+```
+
+```{r}
+tree_model <-
+  decision_tree() %>% 
+  set_engine('rpart') %>% 
+  set_mode('classification')
+
+tree_fit <-
+  tree_model %>% 
+  fit(as.factor(target) ~ days_credit, data = bb)
+
+tree_fit$fit
+```
+
+```{python}
+import pins
+import matplotlib.pyplot as plt
+import pandas as pd
+from sklearn.tree import DecisionTreeClassifier
+from sklearn import tree
+
+board = pins.board_folder(os.getcwd())
+bb = board.pin_read('bureau')
+
+X = bb[['days_credit', 'days_credit_enddate']].fillna(0)
+y = bb.target
+
+clf = DecisionTreeClassifier(max_depth = 2)
+clf.fit(X, y)
+
+tree.plot_tree(clf)
+
+```
 
 #### Hypotheses for Exploration

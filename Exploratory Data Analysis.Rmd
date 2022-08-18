@@ -46,6 +46,7 @@ auto_eda <-
   tryCatch(
       function(df, vars, target){
         
+        
     base_default_rate <- 
       df %>% 
       summarize(mean(!!as.symbol(target))) %>% 
@@ -162,14 +163,88 @@ eda_facet_wrap <-
 Start off analyzing data where very little is missing. 
 ```{r, warning=FALSE, message=FALSE, fig.height=7, fig.width=7}
 
-base_df_rate = mean(as.numeric(as.character(train$target)))
 train_vars <- names(colSums(is.na(train))[colSums(is.na(train)) < 1000])
 
 train %>% 
   auto_eda(vars =  train_vars,
-           target =  'target', 
-           base_default_rate = base_df_rate)
+           target =  'target')
 ```
+```{r}
+train %>% 
+  select(train_vars, - sk_id_curr) %>% 
+  select(where(is.double)) %>% 
+  cor(use = 'complete.obs')
+```
+```{r}
+train %>% 
+  ggplot(aes(x = amt_goods_price, y = amt_credit)) +
+  geom_point() +
+  theme_minimal()
+```
+
+```{r}
+train %>% 
+  select(target, obs_30_cnt_social_circle, def_30_cnt_social_circle) %>% 
+  mutate(perc_sc_default = replace_na(def_30_cnt_social_circle / obs_30_cnt_social_circle, 0))
+  auto_eda()
+
+  
+```
+
+
+
+```{r}
+train %>% 
+  filter(target == 1)
+  select(cnt_fam_members, cnt_children, name_family_status) %>% 
+  mutate(cnt_adults = cnt_fam_members - cnt_children)
+```
+
+# Feature Engineering:
+
+The model currently has a high false positive rate, predicting those who are not likely to default as defaulting. You can look
+
+-Difference between amt_credit and amt_goods_price
+
+
+
+# Income per household member
+```{r}
+train %>% 
+  mutate(target = as.numeric(as.character(target))) %>% 
+  mutate(cnt_adults = cnt_fam_members - cnt_children,
+         single_parent = ifelse(cnt_fam_members - cnt_children == 1 & cnt_children > 0, 1, 0), 
+         income_per_fam_member = round(amt_income_total / cnt_fam_members, 0)/1000,
+         income_per_adult = round(amt_income_total / cnt_adults, 0) / 1000,
+         credit_to_income = amt_income_total / amt_credit,
+         income_per_goods_price = amt_income_total / amt_goods_price,
+         income_per_goods_price_fm = income_per_fam_member / amt_goods_price,
+         amt_credit_goods_price_diff = amt_credit - amt_goods_price,
+         perc_sc_default_30 = replace_na(def_30_cnt_social_circle / obs_30_cnt_social_circle, 0),
+         perc_sc_default_60 = replace_na(def_60_cnt_social_circle / obs_60_cnt_social_circle, 0)) %>% 
+  auto_eda(vars = c('cnt_adults', 'single_parent',  'income_per_fam_member', 'income_per_adult', 'credit_to_income', 'income_per_goods_price', 'income_per_goods_price_fm',
+                    'amt_credit_goods_price_diff', 'perc_sc_default_30', 'perc_sc_default_60'), target = 'target')
+```
+
+```{r, warning=FALSE, message=FALSE, fig.height=7, fig.width=7}
+
+train_vars <- names(colSums(is.na(train))[colSums(is.na(train)) >= 1000])
+
+train %>% 
+  mutate(target = as.numeric(as.character(target))) %>% 
+  auto_eda(vars =  train_vars,
+           target =  'target')
+```
+
+
+
+```{r}
+
+train %>% 
+  mutate(hh_members = )
+```
+
+
 
 # Bureau Data
 ```{r}
